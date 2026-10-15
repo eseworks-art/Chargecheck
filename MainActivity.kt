@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Thermostat
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.*
@@ -24,11 +25,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,44 +52,61 @@ fun rememberBatteryState(context: Context): BatteryState {
     var minCurrent by remember { mutableStateOf(0) }
     var maxCurrent by remember { mutableStateOf(0) }
     var avgCurrent by remember { mutableStateOf(0) }
+    
+    var sampleCount by remember { mutableStateOf(0) }
+    var totalCurrentSum by remember { mutableStateOf(0L) }
+    var lastChargingState by remember { mutableStateOf<Boolean?>(null) }
 
     LaunchedEffect(Unit) {
         val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         
         while (true) {
-            val microAmps = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-            val rawmA = microAmps / 1000
-            currentmA = rawmA
+            val rawValue = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+            val absRaw = abs(rawValue)
+            
+            val mA = if (absRaw > 10000) absRaw / 1000 else absRaw
+            currentmA = mA
 
             val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { filter ->
                 context.registerReceiver(null, filter)
             }
             
             val status = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-            isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+            val plugged = batteryStatus?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+            val nowCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || plugged > 0
+
+            if (lastChargingState != null && lastChargingState != nowCharging) {
+                minCurrent = 0
+                maxCurrent = 0
+                avgCurrent = 0
+                sampleCount = 0
+                totalCurrentSum = 0L
+            }
+            lastChargingState = nowCharging
+            isCharging = nowCharging
 
             val voltageMv = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: 0
-            voltageV = voltageMv / 1000.0
+            voltageV = if (voltageMv > 100) voltageMv / 1000.0 else voltageMv.toDouble()
 
             val tempInt = batteryStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
             temperatureC = tempInt / 10.0
 
-            val absCurrent = abs(rawmA)
-            if (absCurrent > 0) {
-                if (minCurrent == 0 || absCurrent < minCurrent) minCurrent = absCurrent
-                if (absCurrent > maxCurrent) maxCurrent = absCurrent
-                avgCurrent = if (avgCurrent == 0) absCurrent else (avgCurrent + absCurrent) / 2
+            if (mA > 0) {
+                if (minCurrent == 0 || mA < minCurrent) minCurrent = mA
+                if (mA > maxCurrent) maxCurrent = mA
+                sampleCount++
+                totalCurrentSum += mA
+                avgCurrent = (totalCurrentSum / sampleCount).toInt()
             }
 
-            // 1-second update interval to prevent battery drain
             delay(1000L)
         }
     }
 
-    val wattage = abs(currentmA * voltageV) / 1000.0
+    val exactWattage = (currentmA * voltageV) / 1000.0
 
     return BatteryState(
-        wattage = wattage,
+        wattage = exactWattage,
         currentmA = currentmA,
         voltageV = voltageV,
         temperatureC = temperatureC,
@@ -123,12 +143,13 @@ fun ChargingDashboardApp() {
     val speedLabel = when {
         !battery.isCharging -> "Discharging"
         battery.wattage < 5.0 -> "Slow"
-        battery.wattage <= 10.0 -> "Normal"
-        battery.wattage <= 25.0 -> "Fast"
+        battery.wattage <= 12.0 -> "Normal"
+        battery.wattage <= 20.0 -> "Fast"
         else -> "Super Fast"
     }
 
     val statusColor = if (battery.isCharging) Color(0xFF10B981) else Color(0xFFF59E0B)
+    val wholeWatts = battery.wattage.roundToInt()
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -141,7 +162,7 @@ fun ChargingDashboardApp() {
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar: Sunlight / Moon Theme Switcher
+            // Top Bar: Theme Switcher
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -161,7 +182,7 @@ fun ChargingDashboardApp() {
                 }
             }
 
-            // Center Section: Temp, Speed Badge, and Wattage
+            // Center Section: Temp, Speed Badge, and Giant Whole-Number Watts Display
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -218,13 +239,13 @@ fun ChargingDashboardApp() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(48.dp))
+                Spacer(modifier = Modifier.height(40.dp))
 
-                // Main Wattage Display
+                // Giant Whole Watts Display
                 Text(
-                    text = String.format(Locale.US, "%.2f", battery.wattage),
+                    text = "$wholeWatts",
                     style = TextStyle(
-                        fontSize = 64.sp,
+                        fontSize = 72.sp,
                         fontWeight = FontWeight.Bold,
                         color = textColor
                     )
@@ -238,30 +259,62 @@ fun ChargingDashboardApp() {
                     )
                 )
                 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 
+                // Sub-metrics showing mA and Voltage
                 Text(
-                    text = "${abs(battery.currentmA)} mA • ${String.format(Locale.US, "%.1f", battery.voltageV)}V",
+                    text = "${battery.currentmA} mA • ${String.format(Locale.US, "%.1f", battery.voltageV)}V",
                     color = subTextColor,
-                    fontSize = 15.sp
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
 
-            // Bottom Card: Lowest, Average, Highest Current
-            Card(
+            // Bottom Section: Stats Card & Gentle Tip
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = cardColor)
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = cardColor)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        StatItem(label = "Lowest", value = "${battery.minCurrent} mA", labelColor = subTextColor, valueColor = textColor)
+                        StatItem(label = "Average", value = "${battery.avgCurrent} mA", labelColor = subTextColor, valueColor = textColor)
+                        StatItem(label = "Highest", value = "${battery.maxCurrent} mA", labelColor = subTextColor, valueColor = textColor)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Reminder / Notice Message
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(20.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                    StatItem(label = "Lowest", value = "${battery.minCurrent} mA", labelColor = subTextColor, valueColor = textColor)
-                    StatItem(label = "Average", value = "${battery.avgCurrent} mA", labelColor = subTextColor, valueColor = textColor)
-                    StatItem(label = "Highest", value = "${battery.maxCurrent} mA", labelColor = subTextColor, valueColor = textColor)
+                    Icon(
+                        imageVector = Icons.Rounded.Info,
+                        contentDescription = "Tip",
+                        tint = subTextColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Tip: Charging speeds slow down automatically at higher battery percentages.",
+                        color = subTextColor,
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
