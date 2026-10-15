@@ -7,6 +7,8 @@ import android.os.BatteryManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -21,7 +23,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +55,7 @@ fun rememberBatteryState(context: Context): BatteryState {
     var currentmA by remember { mutableStateOf(0) }
     var voltageV by remember { mutableStateOf(0.0) }
     var temperatureC by remember { mutableStateOf(0.0) }
+    var batteryLevel by remember { mutableStateOf(50) }
     var isCharging by remember { mutableStateOf(false) }
     
     var minCurrent by remember { mutableStateOf(0) }
@@ -74,6 +83,12 @@ fun rememberBatteryState(context: Context): BatteryState {
             val status = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
             val plugged = batteryStatus?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
             val nowCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || plugged > 0
+
+            val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            if (level >= 0 && scale > 0) {
+                batteryLevel = ((level.toFloat() / scale.toFloat()) * 100).toInt()
+            }
 
             if (lastChargingState != null && lastChargingState != nowCharging) {
                 minCurrent = 0
@@ -110,6 +125,7 @@ fun rememberBatteryState(context: Context): BatteryState {
         currentmA = currentmA,
         voltageV = voltageV,
         temperatureC = temperatureC,
+        batteryLevel = batteryLevel,
         isCharging = isCharging,
         minCurrent = minCurrent,
         maxCurrent = maxCurrent,
@@ -122,6 +138,7 @@ data class BatteryState(
     val currentmA: Int,
     val voltageV: Double,
     val temperatureC: Double,
+    val batteryLevel: Int,
     val isCharging: Boolean,
     val minCurrent: Int,
     val maxCurrent: Int,
@@ -142,14 +159,42 @@ fun ChargingDashboardApp() {
 
     val speedLabel = when {
         !battery.isCharging -> "Discharging"
-        battery.wattage < 5.0 -> "Slow"
-        battery.wattage <= 12.0 -> "Normal"
-        battery.wattage <= 20.0 -> "Fast"
+        battery.currentmA < 500 -> "Slow"
+        battery.currentmA in 500..899 -> "Normal"
+        battery.currentmA in 900..1998 -> "Fast"
         else -> "Super Fast"
     }
 
     val statusColor = if (battery.isCharging) Color(0xFF10B981) else Color(0xFFF59E0B)
     val wholeWatts = battery.wattage.roundToInt()
+
+    // Persistent battery level color regardless of charging state
+    val batteryLevelColor = when (battery.batteryLevel) {
+        in 1..15 -> Color(0xFFEF4444)   // Red
+        in 16..20 -> Color(0xFFF97316)  // Orange
+        in 21..80 -> Color(0xFF10B981)  // Green
+        else -> Color(0xFF3B82F6)       // Blue (81 to 100)
+    }
+
+    // Current flow animation speed
+    val animDuration = when (speedLabel) {
+        "Super Fast" -> 400
+        "Fast" -> 700
+        "Normal" -> 1100
+        "Slow" -> 1600
+        else -> 3000
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "currentFlow")
+    val flowProgress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(animDuration, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "flowStep"
+    )
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -182,7 +227,7 @@ fun ChargingDashboardApp() {
                 }
             }
 
-            // Center Section: Temp, Speed Badge, and Giant Whole-Number Watts Display
+            // Center Section: Charger Plug + Flow Wire Animation + Animated Battery Icon
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -239,7 +284,114 @@ fun ChargingDashboardApp() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(40.dp))
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Charger Plug & Wire Current Flow Animation Row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    // Charger Plug Icon (Drawn via Canvas)
+                    Canvas(modifier = Modifier.size(36.dp)) {
+                        val plugColor = if (battery.isCharging) Color(0xFF10B981) else subTextColor
+                        // Plug Body
+                        drawRoundRect(
+                            color = plugColor,
+                            topLeft = Offset(size.width * 0.3f, size.height * 0.2f),
+                            size = Size(size.width * 0.4f, size.height * 0.6f),
+                            cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                        )
+                        // Prongs
+                        drawRect(
+                            color = plugColor,
+                            topLeft = Offset(size.width * 0.4f, size.height * 0.05f),
+                            size = Size(size.width * 0.08f, size.height * 0.15f)
+                        )
+                        drawRect(
+                            color = plugColor,
+                            topLeft = Offset(size.width * 0.52f, size.height * 0.05f),
+                            size = Size(size.width * 0.08f, size.height * 0.15f)
+                        )
+                    }
+
+                    // Current passing through wire line
+                    Box(
+                        modifier = Modifier
+                            .width(60.dp)
+                            .height(10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            // Base wire
+                            drawLine(
+                                color = subTextColor.copy(alpha = 0.3f),
+                                start = Offset(0f, size.height / 2),
+                                end = Offset(size.width, size.height / 2),
+                                strokeWidth = 3.dp.toPx()
+                            )
+                            // Moving pulse current if charging
+                            if (battery.isCharging) {
+                                val pulseX = size.width * flowProgress
+                                drawCircle(
+                                    color = Color(0xFF10B981),
+                                    radius = 4.dp.toPx(),
+                                    center = Offset(pulseX, size.height / 2)
+                                )
+                            }
+                        }
+                    }
+
+                    // Huge Animated Battery Icon
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(width = 90.dp, height = 45.dp)
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val strokeWidth = 4.dp.toPx()
+                            val cornerRadius = 8.dp.toPx()
+                            
+                            // Battery Outline
+                            drawRoundRect(
+                                color = batteryLevelColor,
+                                size = Size(size.width - 8.dp.toPx(), size.height),
+                                cornerRadius = CornerRadius(cornerRadius, cornerRadius),
+                                style = Stroke(width = strokeWidth)
+                            )
+                            
+                            // Terminal Tip
+                            drawRoundRect(
+                                color = batteryLevelColor,
+                                topLeft = Offset(size.width - 6.dp.toPx(), size.height / 3f),
+                                size = Size(6.dp.toPx(), size.height / 3f),
+                                cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                            )
+
+                            // Inner Level Fill
+                            val fillWidthMargin = 6.dp.toPx()
+                            val maxFillWidth = size.width - 14.dp.toPx() - fillWidthMargin
+                            val currentFillWidth = maxFillWidth * (battery.batteryLevel / 100f)
+                            
+                            drawRoundRect(
+                                color = batteryLevelColor,
+                                topLeft = Offset(fillWidthMargin, fillWidthMargin),
+                                size = Size(currentFillWidth.coerceAtLeast(4.dp.toPx()), size.height - (fillWidthMargin * 2)),
+                                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
+                                style = Fill
+                            )
+                        }
+
+                        // Percentage Text inside battery icon
+                        Text(
+                            text = "${battery.batteryLevel}%",
+                            color = if (battery.batteryLevel > 50 && isDarkMode) Color.Black else textColor,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Giant Whole Watts Display
                 Text(
