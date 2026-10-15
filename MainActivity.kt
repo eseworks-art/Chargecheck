@@ -40,6 +40,7 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,7 +57,10 @@ fun rememberBatteryState(context: Context): BatteryState {
     var voltageV by remember { mutableStateOf(0.0) }
     var temperatureC by remember { mutableStateOf(0.0) }
     var batteryLevel by remember { mutableStateOf(50) }
+    var batteryCapacitymAh by remember { mutableStateOf(4500) }
     var isCharging by remember { mutableStateOf(false) }
+    var batteryHealth by remember { mutableStateOf("Good") }
+    var cycleCount by remember { mutableStateOf("N/A") }
     
     var minCurrent by remember { mutableStateOf(0) }
     var maxCurrent by remember { mutableStateOf(0) }
@@ -68,7 +72,7 @@ fun rememberBatteryState(context: Context): BatteryState {
 
     LaunchedEffect(Unit) {
         val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        
+
         while (true) {
             val rawValue = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
             val absRaw = abs(rawValue)
@@ -88,6 +92,23 @@ fun rememberBatteryState(context: Context): BatteryState {
             val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
             if (level >= 0 && scale > 0) {
                 batteryLevel = ((level.toFloat() / scale.toFloat()) * 100).toInt()
+            }
+
+            val healthCode = batteryStatus?.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN) ?: BatteryManager.BATTERY_HEALTH_UNKNOWN
+            batteryHealth = when (healthCode) {
+                BatteryManager.BATTERY_HEALTH_GOOD -> "Good"
+                BatteryManager.BATTERY_HEALTH_OVERHEAT -> "Overheat"
+                BatteryManager.BATTERY_HEALTH_DEAD -> "Dead"
+                BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "Over Voltage"
+                BatteryManager.BATTERY_HEALTH_COLD -> "Cold"
+                else -> "Normal"
+            }
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val cycles = batteryStatus?.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1) ?: -1
+                if (cycles >= 0) {
+                    cycleCount = cycles.toString()
+                }
             }
 
             if (lastChargingState != null && lastChargingState != nowCharging) {
@@ -120,6 +141,27 @@ fun rememberBatteryState(context: Context): BatteryState {
 
     val exactWattage = (currentmA * voltageV) / 1000.0
 
+    val timeString = if (isCharging) {
+        if (currentmA > 50 && batteryLevel < 100) {
+            val remainingPercent = 100 - batteryLevel
+            val remainingmAh = (batteryCapacitymAh * (remainingPercent / 100.0))
+            val hours = remainingmAh / currentmA
+            formatTime(hours)
+        } else if (batteryLevel >= 100) {
+            "Fully Charged"
+        } else {
+            "Calculating..."
+        }
+    } else {
+        if (currentmA > 50) {
+            val currentmAh = (batteryCapacitymAh * (batteryLevel / 100.0))
+            val hours = currentmAh / currentmA
+            formatTime(hours) + " until shutdown"
+        } else {
+            "Idle"
+        }
+    }
+
     return BatteryState(
         wattage = exactWattage,
         currentmA = currentmA,
@@ -129,8 +171,22 @@ fun rememberBatteryState(context: Context): BatteryState {
         isCharging = isCharging,
         minCurrent = minCurrent,
         maxCurrent = maxCurrent,
-        avgCurrent = avgCurrent
+        avgCurrent = avgCurrent,
+        timeEstimate = timeString,
+        batteryHealth = batteryHealth,
+        cycleCount = cycleCount
     )
+}
+
+fun formatTime(decimalHours: Double): String {
+    val totalMinutes = (decimalHours * 60).toInt()
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return if (hours > 0) {
+        "$hours hr $minutes min"
+    } else {
+        "$minutes min"
+    }
 }
 
 data class BatteryState(
@@ -142,7 +198,10 @@ data class BatteryState(
     val isCharging: Boolean,
     val minCurrent: Int,
     val maxCurrent: Int,
-    val avgCurrent: Int
+    val avgCurrent: Int,
+    val timeEstimate: String,
+    val batteryHealth: String,
+    val cycleCount: String
 )
 
 @Composable
@@ -168,15 +227,13 @@ fun ChargingDashboardApp() {
     val statusColor = if (battery.isCharging) Color(0xFF10B981) else Color(0xFFF59E0B)
     val wholeWatts = battery.wattage.roundToInt()
 
-    // Persistent battery level color regardless of charging state
     val batteryLevelColor = when (battery.batteryLevel) {
-        in 1..15 -> Color(0xFFEF4444)   // Red
-        in 16..20 -> Color(0xFFF97316)  // Orange
-        in 21..80 -> Color(0xFF10B981)  // Green
-        else -> Color(0xFF3B82F6)       // Blue (81 to 100)
+        in 1..15 -> Color(0xFFEF4444)
+        in 16..20 -> Color(0xFFF97316)
+        in 21..80 -> Color(0xFF10B981)
+        else -> Color(0xFF3B82F6)
     }
 
-    // Current flow animation speed
     val animDuration = when (speedLabel) {
         "Super Fast" -> 400
         "Fast" -> 700
@@ -185,7 +242,7 @@ fun ChargingDashboardApp() {
         else -> 3000
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "currentFlow")
+    val infiniteTransition = rememberInfiniteTransition(label = "animations")
     val flowProgress by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
@@ -196,6 +253,16 @@ fun ChargingDashboardApp() {
         label = "flowStep"
     )
 
+    val wavePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wavePhase"
+    )
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = backgroundColor
@@ -203,7 +270,7 @@ fun ChargingDashboardApp() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
+                .padding(20.dp),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -227,7 +294,7 @@ fun ChargingDashboardApp() {
                 }
             }
 
-            // Center Section: Charger Plug + Flow Wire Animation + Animated Battery Icon
+            // Center Section: Header, Charger Animation, Doubled-Size Fluid Battery & Watts
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -243,19 +310,19 @@ fun ChargingDashboardApp() {
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .background(cardColor)
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Thermostat,
                             contentDescription = "Temperature",
                             tint = if (battery.temperatureC > 40.0) Color(0xFFEF4444) else Color(0xFF38BDF8),
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = String.format(Locale.US, "%.1f°C", battery.temperatureC),
                             color = textColor,
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
                         )
                     }
@@ -266,7 +333,7 @@ fun ChargingDashboardApp() {
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .background(statusColor.copy(alpha = 0.15f))
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Box(
                             modifier = Modifier
@@ -278,13 +345,13 @@ fun ChargingDashboardApp() {
                         Text(
                             text = speedLabel,
                             color = statusColor,
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Charger Plug & Wire Current Flow Animation Row
                 Row(
@@ -292,17 +359,14 @@ fun ChargingDashboardApp() {
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    // Charger Plug Icon (Drawn via Canvas)
-                    Canvas(modifier = Modifier.size(36.dp)) {
+                    Canvas(modifier = Modifier.size(34.dp)) {
                         val plugColor = if (battery.isCharging) Color(0xFF10B981) else subTextColor
-                        // Plug Body
                         drawRoundRect(
                             color = plugColor,
                             topLeft = Offset(size.width * 0.3f, size.height * 0.2f),
                             size = Size(size.width * 0.4f, size.height * 0.6f),
                             cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
                         )
-                        // Prongs
                         drawRect(
                             color = plugColor,
                             topLeft = Offset(size.width * 0.4f, size.height * 0.05f),
@@ -315,22 +379,19 @@ fun ChargingDashboardApp() {
                         )
                     }
 
-                    // Current passing through wire line
                     Box(
                         modifier = Modifier
-                            .width(60.dp)
+                            .width(45.dp)
                             .height(10.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            // Base wire
                             drawLine(
                                 color = subTextColor.copy(alpha = 0.3f),
                                 start = Offset(0f, size.height / 2),
                                 end = Offset(size.width, size.height / 2),
                                 strokeWidth = 3.dp.toPx()
                             )
-                            // Moving pulse current if charging
                             if (battery.isCharging) {
                                 val pulseX = size.width * flowProgress
                                 drawCircle(
@@ -342,62 +403,75 @@ fun ChargingDashboardApp() {
                         }
                     }
 
-                    // Huge Animated Battery Icon
+                    // Doubled-Size Fluid Animated Battery Icon (150 x 76 dp)
                     Box(
                         contentAlignment = Alignment.Center,
-                        modifier = Modifier.size(width = 90.dp, height = 45.dp)
+                        modifier = Modifier.size(width = 150.dp, height = 76.dp)
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            val strokeWidth = 4.dp.toPx()
-                            val cornerRadius = 8.dp.toPx()
+                            val strokeWidth = 6.dp.toPx()
+                            val cornerRadius = 12.dp.toPx()
                             
-                            // Battery Outline
                             drawRoundRect(
                                 color = batteryLevelColor,
-                                size = Size(size.width - 8.dp.toPx(), size.height),
+                                size = Size(size.width - 12.dp.toPx(), size.height),
                                 cornerRadius = CornerRadius(cornerRadius, cornerRadius),
                                 style = Stroke(width = strokeWidth)
                             )
                             
-                            // Terminal Tip
                             drawRoundRect(
                                 color = batteryLevelColor,
-                                topLeft = Offset(size.width - 6.dp.toPx(), size.height / 3f),
-                                size = Size(6.dp.toPx(), size.height / 3f),
-                                cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                                topLeft = Offset(size.width - 10.dp.toPx(), size.height / 3f),
+                                size = Size(10.dp.toPx(), size.height / 3f),
+                                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
                             )
 
-                            // Inner Level Fill
-                            val fillWidthMargin = 6.dp.toPx()
-                            val maxFillWidth = size.width - 14.dp.toPx() - fillWidthMargin
-                            val currentFillWidth = maxFillWidth * (battery.batteryLevel / 100f)
-                            
-                            drawRoundRect(
-                                color = batteryLevelColor,
-                                topLeft = Offset(fillWidthMargin, fillWidthMargin),
-                                size = Size(currentFillWidth.coerceAtLeast(4.dp.toPx()), size.height - (fillWidthMargin * 2)),
-                                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
-                                style = Fill
-                            )
+                            val fillWidthMargin = 10.dp.toPx()
+                            val maxFillWidth = size.width - 22.dp.toPx() - fillWidthMargin
+                            val targetFillWidth = maxFillWidth * (battery.batteryLevel / 100f)
+                            val innerHeight = size.height - (fillWidthMargin * 2)
+
+                            if (battery.isCharging) {
+                                val wavePath = Path().apply {
+                                    moveTo(fillWidthMargin, size.height - fillWidthMargin)
+                                    val waveHeight = 5.dp.toPx()
+                                    val frequency = 0.04f
+                                    for (x in 0..targetFillWidth.toInt()) {
+                                        val angle = (x + wavePhase) * frequency
+                                        val y = (size.height - fillWidthMargin) - (innerHeight * (battery.batteryLevel / 100f)) + (sin(angle.toDouble()) * waveHeight).toFloat()
+                                        lineTo(fillWidthMargin + x, y.coerceIn(fillWidthMargin, size.height - fillWidthMargin))
+                                    }
+                                    lineTo(fillWidthMargin + targetFillWidth, size.height - fillWidthMargin)
+                                    close()
+                                }
+                                drawPath(path = wavePath, color = batteryLevelColor.copy(alpha = 0.85f))
+                            } else {
+                                drawRoundRect(
+                                    color = batteryLevelColor.copy(alpha = 0.6f),
+                                    topLeft = Offset(fillWidthMargin, fillWidthMargin),
+                                    size = Size(targetFillWidth.coerceAtLeast(8.dp.toPx()), innerHeight),
+                                    cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                                    style = Fill
+                                )
+                            }
                         }
 
-                        // Percentage Text inside battery icon
                         Text(
                             text = "${battery.batteryLevel}%",
-                            color = if (battery.batteryLevel > 50 && isDarkMode) Color.Black else textColor,
-                            fontSize = 12.sp,
+                            color = textColor,
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Giant Whole Watts Display
                 Text(
                     text = "$wholeWatts",
                     style = TextStyle(
-                        fontSize = 72.sp,
+                        fontSize = 68.sp,
                         fontWeight = FontWeight.Bold,
                         color = textColor
                     )
@@ -405,37 +479,46 @@ fun ChargingDashboardApp() {
                 Text(
                     text = if (battery.isCharging) "WATTS (CHARGING)" else "WATTS (DISCHARGING)",
                     style = TextStyle(
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         letterSpacing = 2.sp,
                         color = subTextColor
                     )
                 )
                 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 
-                // Sub-metrics showing mA and Voltage
                 Text(
-                    text = "${battery.currentmA} mA • ${String.format(Locale.US, "%.1f", battery.voltageV)}V",
+                    text = "$wholeWatts W • ${battery.currentmA} mA • ${String.format(Locale.US, "%.1f", battery.voltageV)}V",
                     color = subTextColor,
-                    fontSize = 15.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Medium
+                )
+                
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = battery.timeEstimate,
+                    color = statusColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
 
-            // Bottom Section: Stats Card & Gentle Tip
+            // Bottom Section: Stats Card, Health/Cycles & Tip
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Min / Max / Avg Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = cardColor)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(20.dp),
+                            .padding(16.dp),
                         horizontalArrangement = Arrangement.SpaceAround
                     ) {
                         StatItem(label = "Lowest", value = "${battery.minCurrent} mA", labelColor = subTextColor, valueColor = textColor)
@@ -444,9 +527,50 @@ fun ChargingDashboardApp() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // Reminder / Notice Message
+                // Battery Health & Cycles Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = cardColor)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(text = "Battery Health", color = subTextColor, fontSize = 11.sp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(text = battery.batteryHealth, color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = cardColor)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(text = "Charge Cycles", color = subTextColor, fontSize = 11.sp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(text = battery.cycleCount, color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -458,13 +582,13 @@ fun ChargingDashboardApp() {
                         imageVector = Icons.Rounded.Info,
                         contentDescription = "Tip",
                         tint = subTextColor,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(12.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "Tip: Charging speeds slow down automatically at higher battery percentages.",
+                        text = "Tip: Charging speeds slow down at higher battery percentages.",
                         color = subTextColor,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -476,8 +600,8 @@ fun ChargingDashboardApp() {
 @Composable
 fun StatItem(label: String, value: String, labelColor: Color, valueColor: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = label, color = labelColor, fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(text = value, color = valueColor, fontWeight = FontWeight.Medium, fontSize = 15.sp)
+        Text(text = label, color = labelColor, fontSize = 11.sp)
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(text = value, color = valueColor, fontWeight = FontWeight.Medium, fontSize = 14.sp)
     }
 }
