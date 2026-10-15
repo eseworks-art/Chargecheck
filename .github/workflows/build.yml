@@ -12,16 +12,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Organize files into proper Android folders
+      - name: Auto-fix folders and required Android files
         run: |
+          # 1. Create required gradle.properties for Jetpack Compose
+          echo "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8" > gradle.properties
+          echo "android.useAndroidX=true" >> gradle.properties
+          echo "android.nonTransitiveRClass=true" >> gradle.properties
+
+          # 2. Place MainActivity.kt in the right package folder
           mkdir -p app/src/main/java/com/example/chargingmonitor
           if [ -f "MainActivity.kt" ]; then
             cp MainActivity.kt app/src/main/java/com/example/chargingmonitor/MainActivity.kt
+          fi
+
+          # 3. Fix nested app/app files if they exist
+          if [ -f "app/app/build.gradle.kts" ]; then
+            cp app/app/build.gradle.kts app/build.gradle.kts
           fi
           if [ -f "app/app/src/main/AndroidManifest.xml" ]; then
             mkdir -p app/src/main
             cp app/app/src/main/AndroidManifest.xml app/src/main/AndroidManifest.xml
           fi
+
+          # 4. Clean up extra nested app/app folder so it doesn't confuse Gradle
+          rm -rf app/app
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
