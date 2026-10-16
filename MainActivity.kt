@@ -12,8 +12,10 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Info
@@ -58,10 +60,9 @@ fun rememberBatteryState(context: Context): BatteryState {
     var voltageV by remember { mutableStateOf(0.0) }
     var temperatureC by remember { mutableStateOf(0.0) }
     var batteryLevel by remember { mutableStateOf(50) }
-    var batteryCapacitymAh by remember { mutableStateOf(4500) } // Default fallback capacity
+    var batteryCapacitymAh by remember { mutableStateOf(4500) } // Standard baseline capacity
     var isCharging by remember { mutableStateOf(false) }
     var batteryHealth by remember { mutableStateOf("Good") }
-    var cycleCount by remember { mutableStateOf("N/A") }
     
     val manufacturer = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
     val model = Build.MODEL
@@ -76,14 +77,6 @@ fun rememberBatteryState(context: Context): BatteryState {
 
     LaunchedEffect(Unit) {
         val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-
-        // Attempt to extract true design capacity if available on device profile
-        try {
-            val computeCharge = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-            if (computeCharge > 0) {
-                // Approximate total capacity check
-            }
-        } catch (_: Exception) {}
 
         while (true) {
             val rawValue = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
@@ -114,13 +107,6 @@ fun rememberBatteryState(context: Context): BatteryState {
                 BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "Over Voltage"
                 BatteryManager.BATTERY_HEALTH_COLD -> "Cold"
                 else -> "Normal"
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val cycles = batteryStatus?.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1) ?: -1
-                if (cycles >= 0) {
-                    cycleCount = cycles.toString()
-                }
             }
 
             if (lastChargingState != null && lastChargingState != nowCharging) {
@@ -187,7 +173,6 @@ fun rememberBatteryState(context: Context): BatteryState {
         avgCurrent = avgCurrent,
         timeEstimate = timeString,
         batteryHealth = batteryHealth,
-        cycleCount = cycleCount,
         deviceInfo = "$manufacturer $model",
         totalCapacity = batteryCapacitymAh,
         availableCapacity = availableCapacitymAh
@@ -217,7 +202,6 @@ data class BatteryState(
     val avgCurrent: Int,
     val timeEstimate: String,
     val batteryHealth: String,
-    val cycleCount: String,
     val deviceInfo: String,
     val totalCapacity: Int,
     val availableCapacity: Int
@@ -289,50 +273,52 @@ fun ChargingDashboardApp() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar: Device Info & Theme Switcher
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = battery.deviceInfo,
-                    color = subTextColor,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                IconButton(
-                    onClick = { isDarkMode = !isDarkMode },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(cardColor)
-                ) {
-                    Icon(
-                        imageVector = if (isDarkMode) Icons.Rounded.WbSunny else Icons.Rounded.DarkMode,
-                        contentDescription = "Toggle Theme",
-                        tint = if (isDarkMode) Color(0xFFFBBF24) else Color(0xFF475569),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            // Center Section: Header, Charger Animation, Doubled-Size Fluid Battery & Watts
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Top Bar: Device Info & Theme Switcher
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Temperature Pill
+                    Text(
+                        text = battery.deviceInfo,
+                        color = subTextColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    IconButton(
+                        onClick = { isDarkMode = !isDarkMode },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(cardColor)
+                    ) {
+                        Icon(
+                            imageVector = if (isDarkMode) Icons.Rounded.WbSunny else Icons.Rounded.DarkMode,
+                            contentDescription = "Toggle Theme",
+                            tint = if (isDarkMode) Color(0xFFFBBF24) else Color(0xFF475569),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Status Pills Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
@@ -355,7 +341,6 @@ fun ChargingDashboardApp() {
                         )
                     }
 
-                    // Charging Speed Pill
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
@@ -379,7 +364,7 @@ fun ChargingDashboardApp() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Charger Plug & Wire Current Flow Animation Row
                 Row(
@@ -527,16 +512,12 @@ fun ChargingDashboardApp() {
                 Text(
                     text = battery.timeEstimate,
                     color = statusColor,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-            }
 
-            // Bottom Section: Stats Card, Health/Capacity Cards & Tip
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+                Spacer(modifier = Modifier.height(16.dp))
+
                 // Min / Max / Avg Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -555,9 +536,9 @@ fun ChargingDashboardApp() {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // Battery Health, Available Capacity, and Cycles Row
+                // Battery Health & Full Capacity Breakdown Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -570,7 +551,7 @@ fun ChargingDashboardApp() {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
+                                .padding(10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(text = "Health", color = subTextColor, fontSize = 10.sp)
@@ -580,41 +561,29 @@ fun ChargingDashboardApp() {
                     }
 
                     Card(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1.5f),
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(containerColor = cardColor)
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
+                                .padding(10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(text = "Available", color = subTextColor, fontSize = 10.sp)
+                            Text(text = "Capacity (Avail / Full)", color = subTextColor, fontSize = 10.sp)
                             Spacer(modifier = Modifier.height(2.dp))
-                            Text(text = "${battery.availableCapacity} mAh", color = textColor, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-
-                    Card(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(containerColor = cardColor)
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(text = "Cycles", color = subTextColor, fontSize = 10.sp)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(text = battery.cycleCount, color = textColor, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(
+                                text = "${battery.availableCapacity} / ${battery.totalCapacity} mAh",
+                                color = textColor,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Row(
                     modifier = Modifier
@@ -633,8 +602,27 @@ fun ChargingDashboardApp() {
                     Text(
                         text = "Tip: Charging speeds slow down at higher battery percentages.",
                         color = subTextColor,
-                        fontSize = 9.sp,
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Ad Banner Placeholder Container (Reserved for future AdMob Banner View)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(cardColor),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Ad Banner Space (Maintenance Fund)",
+                        color = subTextColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
